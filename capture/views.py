@@ -5,6 +5,9 @@ from rest_framework import status
 from .serializers import TextileCreateSerializer
 from .services import create_textile, upload_to_storage, add_textile_image_doc, add_vtimage_doc
  
+from .process3d import generate_and_upload_glb
+
+from datetime import timedelta
 
 class UploadTextile(APIView):
     def post(self, request):
@@ -33,4 +36,9 @@ class UploadTextile(APIView):
             add_vtimage_doc(textile_id, i + 1, path, f.name)
             vt_results.append({"index": i + 1, "name": f.name, "storagePath": path})
 
+        generate_and_upload_glb(textile_id, textile_image, vtimages)
+
         return Response(status=status.HTTP_201_CREATED )
+    
+    #        url = blob.generate_signed_url( version="v4",expiration=timedelta(minutes=60),method="GET"
+        
