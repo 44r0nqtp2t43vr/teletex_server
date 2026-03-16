@@ -39,6 +39,7 @@ class UploadTextile(APIView):
             update_textile_main_doc(textile_id=textile_id, status="failed")
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+#
 class GetTextiles(APIView):
     def get(self, request):
         try:
