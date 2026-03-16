@@ -24,8 +24,7 @@ class UploadTextile(APIView):
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-        update_textile_main_doc(
-            textile_id=textile_id, status="processing")
+        update_textile_main_doc(textile_id=textile_id, status="processing")
 
         write_metadata(textile_id, title)
 
@@ -50,20 +49,48 @@ class GetTextiles(APIView):
 
             for doc in docs:
                 data = doc.to_dict()
+
+                if data.get("status") != "ready":
+                    continue
+
                 textile_path = data.get("textilePath")
                 textile_image_url = None
 
                 if textile_path:
                     blob = bucket.blob(textile_path)
-                    textile_image_url = blob.generate_signed_url(expiration=timedelta(hours=1), method="GET")
+                    textile_image_url = blob.generate_signed_url(expiration=timedelta(hours=1),method="GET")
 
                 results.append({
                     "textileId": doc.id, "title": data.get("title"), "textilePath": textile_path, "textileImgSignedUrl": textile_image_url,})
 
-            return Response(results, status=status.HTTP_200_OK)
+            return Response({"items": results}, status=status.HTTP_200_OK)
 
         except Exception as e:
             return Response({"error": str(e)},status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
 
 
+  
+class GetModel(APIView):
+    def get(self, request, textile_id):
+        try:
+            db = get_db()
+            bucket = get_bucket()
+
+            doc = db.collection("textile").document(textile_id).get()
+
+            if not doc.exists:
+                return Response({"error": "Textile not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            data = doc.to_dict()
+            glb_path = data.get("glbPath")
+
+            if not glb_path:
+                return Response({"error": "Model not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            blob = bucket.blob(glb_path)
+            glb_url = blob.generate_signed_url(expiration=timedelta(hours=1),method="GET")
+
+            return Response({"textileId": doc.id, "title": data.get("title"), "glbSignedUrl": glb_url,}, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
