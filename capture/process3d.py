@@ -4,22 +4,85 @@ import trimesh
 from PIL import Image
 from config.firebase_config import get_bucket
 
-def uploaded_file_to_bgr(file_obj):
-    file_obj.seek(0)  
-    file_bytes = file_obj.read()
 
-    img_array = np.frombuffer(file_bytes, np.uint8)
-    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    if img is None:
-        raise ValueError("Image error!")
-    
-    file_obj.seek(0)  
+def storage_path_to_bgr(path):
+    bucket = get_bucket()
+    blob = bucket.blob(path)
+
+    image_bytes = blob.download_as_bytes()
+
+    arr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
 
     return img
 
+def get_vt_paths(textile_id):
+    bucket = get_bucket()
+    prefix = f"teletex/{textile_id}/vt_image/"
+
+    blobs = list(bucket.list_blobs(prefix=prefix))
+
+    vt_files = []
+
+    for blob in blobs:
+        name = blob.name.split("/")[-1]
+
+        if not name:
+            continue
+
+        lower = name.lower()
+        if not (lower.endswith(".jpg") or lower.endswith(".jpeg") or lower.endswith(".png")):
+            continue
+
+        number_part = name.split("_")[-1].split(".")[0]
+        index = int(number_part)
+
+        vt_files.append((index, blob.name))
+
+    vt_files.sort(key=lambda x: x[0])
+
+    if len(vt_files) != 16:
+        raise ValueError("Expected 16 VT images.")
+
+    return [path for _, path in vt_files]
+
+def get_textile_path(textile_id):
+    bucket = get_bucket()
+    prefix = f"teletex/{textile_id}/textile_image/"
+
+    blobs = list(bucket.list_blobs(prefix=prefix))
+
+    image_paths = []
+
+    for blob in blobs:
+        name = blob.name.lower()
+
+        if name.endswith("/"):
+            continue
+
+        if name.endswith(".jpg") or name.endswith(".jpeg") or name.endswith(".png"):
+            image_paths.append(blob.name)
+
+    if len(image_paths) == 0:
+        raise ValueError("No textile image found.")
+
+    return image_paths[0]
+# def uploaded_file_to_bgr(file_obj):
+#     file_obj.seek(0)  
+#     file_bytes = file_obj.read()
+
+#     img_array = np.frombuffer(file_bytes, np.uint8)
+#     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+#     if img is None:
+#         raise ValueError("Image error!")
+    
+#     file_obj.seek(0)  
+
+#     return img
+
 X_START, Y_START, SIDE_LENGTH = 275, 275, 1371
 
-def build_binary_from_vtimages(vt_bgr_list, X_START, Y_START, SIDE_LENGTH) -> np.ndarray:
+def build_binary_from_vtimages(vt_bgr_list, X_START, Y_START, SIDE_LENGTH):
 
     RED_WEIGHT, GREEN_WEIGHT, BLUE_WEIGHT = 1.0, 1.6, 1.0
     GAMMA = 0.8
@@ -79,7 +142,7 @@ def build_binary_from_vtimages(vt_bgr_list, X_START, Y_START, SIDE_LENGTH) -> np
     return final_binary_rgb
 
 
-def generate_tile_glb_bytes(color_bgr: np.ndarray, depth_rgb: np.ndarray, target_size=(512, 512)) -> bytes:
+def generate_tile_glb_bytes(color_bgr: np.ndarray, depth_rgb: np.ndarray, target_size=(512, 512)):
     color_bgr = cv2.resize(color_bgr, target_size, interpolation=cv2.INTER_AREA)
     depth_rgb = cv2.resize(depth_rgb, target_size, interpolation=cv2.INTER_AREA)
 
@@ -162,41 +225,50 @@ def generate_tile_glb_bytes(color_bgr: np.ndarray, depth_rgb: np.ndarray, target
 
     return mesh.export(file_type="glb")
 
-def upload_glb_bytes(textile_id: str, glb_bytes: bytes) -> str:
+def upload_glb_bytes(textile_id: str, glb_bytes: bytes):
     bucket = get_bucket()
-    storage_path = f"teletex/{textile_id}/model/texture_tile.glb"
+
+    file_name = f"{textile_id}_3d.glb"
+    storage_path = f"teletex/{textile_id}/model/{file_name}"
+
     blob = bucket.blob(storage_path)
     blob.upload_from_string(glb_bytes, content_type="model/gltf-binary")
-    return storage_path
+
+    return storage_path, file_name
 
 
-def upload_stitched_binary_image(textile_id: str, binary_rgb: np.ndarray) -> str:
+def upload_stitched_binary_image(textile_id: str, binary_rgb: np.ndarray):
     bucket = get_bucket()
-    storage_path = f"teletex/{textile_id}/binary/binary_full.png"
+
+    file_name = f"{textile_id}_binary.png"
+    storage_path = f"teletex/{textile_id}/binary/{file_name}"
+
     blob = bucket.blob(storage_path)
 
     binary_bgr = cv2.cvtColor(binary_rgb, cv2.COLOR_RGB2BGR)
-    cv2.imwrite("debug_binary_full.jpg", binary_bgr)
 
     ok, buf = cv2.imencode(".png", binary_bgr)
     if not ok:
         raise ValueError("Failed to encode binary image.")
 
     blob.upload_from_string(buf.tobytes(), content_type="image/png")
-    return storage_path
+
+    return storage_path, file_name
 
 
-def generate_and_upload_glb(textile_id, textile_image, vtimages):
-    color_bgr = uploaded_file_to_bgr(textile_image)
+def generate_and_upload_glb(textile_id):
+    textile_path = get_textile_path(textile_id)
+    color_bgr = storage_path_to_bgr(textile_path)
 
-    vt_bgr_list = [uploaded_file_to_bgr(f) for f in vtimages]
+    vt_paths = get_vt_paths(textile_id)
+    vt_bgr_list = [storage_path_to_bgr(p) for p in vt_paths]
 
-    
     depth_rgb = build_binary_from_vtimages(vt_bgr_list, X_START, Y_START, SIDE_LENGTH)
 
-    binary_path = upload_stitched_binary_image(textile_id, depth_rgb)
-    
+    binary_path, binary_name = upload_stitched_binary_image(textile_id, depth_rgb)
+
     glb_bytes = generate_tile_glb_bytes(color_bgr, depth_rgb)
-    glb_path = upload_glb_bytes(textile_id, glb_bytes)
+
+    glb_path, glb_name = upload_glb_bytes(textile_id, glb_bytes)
 
     return glb_path, binary_path

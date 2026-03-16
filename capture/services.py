@@ -1,74 +1,80 @@
 from google.cloud.firestore import SERVER_TIMESTAMP
 from config.firebase_config import get_db, get_bucket
 from string import ascii_letters, digits
-import os
 
 
-def create_textile_id(title: str) -> str:
-    allowed = ascii_letters + digits + "-"
-    title = title.strip().lower().replace(" ", "-")
-
-    cleaned_title = ""
-
-    for char in title:
-        if char in allowed:
-            cleaned_title += char
-        else:
-            cleaned_title += "-"
-
-    cleaned_title = cleaned_title.strip("-")
-
-    if not cleaned_title:
-        raise ValueError("Invalid textile title.")
-    
-    return cleaned_title
-
-def create_textile(title: str) -> str:
-    db = get_db()
-    textile_id = create_textile_id(title)
-    ref = db.collection("textile").document(textile_id)
-
-    if ref.get().exists:
-        raise ValueError("Textile title already exists.")
-
-    ref.set({
-        "title": title,
-        "created_at": SERVER_TIMESTAMP,
-        "updated_at": SERVER_TIMESTAMP,
-    })
-
-    return textile_id
-
-def upload_to_storage(textile_id:str, folder: str, file_obj, file_name: str) -> str:
+def get_textile_blob(textile_id: str):
     bucket = get_bucket()
+    prefix = f"teletex/{textile_id}/textile_image/"
 
-    storage_path = f"teletex/{textile_id}/{folder}/{file_name}"
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    print("Found textile blobs:", [b.name for b in blobs])
 
-    blob = bucket.blob(storage_path)
+    image_blobs = []
 
-    blob.upload_from_file(
-        file_obj.file, content_type=getattr(file_obj, "content_type", None) or "application/octet-stream",
+    for blob in blobs:
+        name = blob.name.lower()
+        if name.endswith("/"):
+            continue
+
+        if name.endswith(".jpg") or name.endswith(".jpeg") or name.endswith(".png"):
+            image_blobs.append(blob)
+
+    if len(image_blobs) == 0:
+        raise ValueError("Missing textile image.")
+
+    return image_blobs[0]
+
+
+def get_vt_blobs(textile_id: str):
+    bucket = get_bucket()
+    prefix = f"teletex/{textile_id}/vt_image/"
+
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    vt_files = []
+
+    for blob in blobs:
+        name = blob.name.split("/")[-1]
+        if not name:
+            continue
+
+        lower_name = name.lower()
+        if not (lower_name.endswith(".jpg") or lower_name.endswith(".jpeg") or lower_name.endswith(".png")):
+            continue
+
+        number_part = name.split("_")[-1].split(".")[0]
+        index = int(number_part)
+
+        vt_files.append((index, blob))
+
+    vt_files.sort(key=lambda x: x[0])
+
+    if len(vt_files) != 16:
+        raise ValueError("Expected exactly 16 VT images.")
+
+    return [blob for _, blob in vt_files]
+
+
+def verify_storage_files(textile_id: str):
+    get_textile_blob(textile_id)
+    get_vt_blobs(textile_id)
+
+def write_metadata(textile_id: str, title: str):
+    textile_blob = get_textile_blob(textile_id)
+
+    update_textile_main_doc(
+        textile_id=textile_id,
+        title=title,
+        textile_path=textile_blob.name
     )
 
-    return storage_path
+    vt_blobs = get_vt_blobs(textile_id)
 
-def add_textile_image_doc(textile_id: str, storage_path: str, file_name) -> str:
-    db = get_db()
+    for i, blob in enumerate(vt_blobs, start=1):
+        file_name = blob.name.split("/")[-1]
+        add_vtimage_doc(textile_id, i, blob.name, file_name)
 
-    doc_ref = (
-        db.collection("textile").document(textile_id).collection("textile_image").document(file_name)
-    )
-
-    doc_ref.set({
-        "name": file_name,
-        "storagePath": storage_path,
-        "created_at": SERVER_TIMESTAMP,
-        "updated_at": SERVER_TIMESTAMP,
-    })
-
-    return doc_ref.id
-
-def add_vtimage_doc(textile_id: str, index:int,  storage_path: str, file_name) -> str:
+def add_vtimage_doc(textile_id: str, index: int, storage_path: str, file_name) -> str:
     db = get_db()
 
     doc_ref = (
@@ -82,4 +88,33 @@ def add_vtimage_doc(textile_id: str, index:int,  storage_path: str, file_name) -
         "created_at": SERVER_TIMESTAMP,
         "updated_at": SERVER_TIMESTAMP,
     })
+
     return doc_ref.id
+
+def update_textile_main_doc(textile_id, title=None, status=None, textile_path=None, binary_path=None, glb_path=None):
+    db = get_db()
+    ref = db.collection("textile").document(textile_id)
+
+    data = {
+        "updated_at": SERVER_TIMESTAMP,
+    }
+
+    if title is not None:
+        data["title"] = title
+
+    if status is not None:
+        data["status"] = status
+
+    if textile_path is not None:
+        data["textilePath"] = textile_path
+
+    if binary_path is not None:
+        data["binaryPath"] = binary_path
+
+    if glb_path is not None:
+        data["glbPath"] = glb_path
+
+    if not ref.get().exists:
+        data["created_at"] = SERVER_TIMESTAMP
+
+    ref.set(data, merge=True)
