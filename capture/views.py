@@ -24,20 +24,147 @@ class UploadTextile(APIView):
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-        update_textile_main_doc(textile_id=textile_id, status="processing")
-
         write_metadata(textile_id, title)
 
-        try:
-            glb_path, binary_path = generate_and_upload_glb(textile_id)
+        update_textile_main_doc(
+            textile_id=textile_id,
+            status="processing",
+            stage="starting",
+            progress=0
+        )
 
-            update_textile_main_doc(textile_id=textile_id, status="ready", binary_path=binary_path, glb_path=glb_path)
-            return Response(status=status.HTTP_201_CREATED)
+        def progress_callback(stage, progress, **kwargs):
+            update_textile_main_doc(
+                textile_id=textile_id,
+                status="processing",
+                stage=stage,
+                progress=progress,
+                **kwargs
+            )
+
+        try:
+            result = generate_and_upload_glb(
+                textile_id,
+                progress_callback=progress_callback
+            )
+
+            update_textile_main_doc(
+                textile_id=textile_id,
+                status="ready",
+                stage="done",
+                progress=4,
+                textilePath=result["textile_path"],
+                stitched_path=result["stitched_path"],
+                binary_path=result["binary_path"],
+                glb_path=result["glb_path"],
+            )
+
+            return Response(
+                {
+                    "textileId": textile_id,
+                    "title": title,
+                    "status": "ready",
+                    "stage": "done",
+                    "progress": 4,
+                    "textilePath": result["textile_path"],
+                    "stitchedPath": result["stitched_path"],
+                    "binaryPath": result["binary_path"],
+                    "glbPath": result["glb_path"],
+                },
+                status=status.HTTP_201_CREATED
+            )
 
         except Exception as e:
-            update_textile_main_doc(textile_id=textile_id, status="failed")
+            update_textile_main_doc(
+                textile_id=textile_id,
+                status="failed",
+                stage="failed"
+            )
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
 
+class GetPreview(APIView):
+    def get(self, request, textile_id):
+        try:
+            db = get_db()
+            bucket = get_bucket()
+
+            doc = db.collection("textile").document(textile_id).get()
+
+            if not doc.exists:
+                return Response(
+                    {
+                        "textileId": textile_id,
+                        "status": "waiting",
+                        "stage": "waiting",
+                        "progress": 0,
+                        "ready": False,
+                        "originalImageUrl": None,
+                        "stitchedImageUrl": None,
+                        "binaryImageUrl": None,
+                        "glbUrl": None,
+                    },
+                    status=status.HTTP_200_OK
+                )
+
+            data = doc.to_dict()
+
+            textile_path = data.get("textilePath")
+            stitched_path = data.get("stitched_path")
+            binary_path = data.get("binary_path")
+            glb_path = data.get("glb_path")
+            status_value = data.get("status")
+            stage = data.get("stage")
+            progress = data.get("progress", 0)
+
+            original_url = None
+            stitched_url = None
+            binary_url = None
+            glb_url = None
+
+            if textile_path:
+                original_url = bucket.blob(textile_path).generate_signed_url(
+                    expiration=timedelta(hours=1),
+                    method="GET"
+                )
+
+            if stitched_path:
+                stitched_url = bucket.blob(stitched_path).generate_signed_url(
+                    expiration=timedelta(hours=1),
+                    method="GET"
+                )
+
+            if binary_path:
+                binary_url = bucket.blob(binary_path).generate_signed_url(
+                    expiration=timedelta(hours=1),
+                    method="GET"
+                )
+
+            if glb_path:
+                glb_url = bucket.blob(glb_path).generate_signed_url(
+                    expiration=timedelta(hours=1),
+                    method="GET"
+                )
+
+            return Response(
+                {
+                    "textileId": textile_id,
+                    "title": data.get("title"),
+                    "status": status_value,
+                    "stage": stage,
+                    "progress": progress,
+                    "ready": status_value == "ready",
+                    "originalImageUrl": original_url,
+                    "stitchedImageUrl": stitched_url,
+                    "binaryImageUrl": binary_url,
+                    "glbUrl": glb_url,
+                },
+                status=status.HTTP_200_OK
+            )
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
 class GetTextiles(APIView):
     def get(self, request):
         try:
@@ -82,7 +209,7 @@ class GetModel(APIView):
                 return Response({"error": "Textile not found."}, status=status.HTTP_404_NOT_FOUND)
 
             data = doc.to_dict()
-            glb_path = data.get("glbPath")
+            glb_path = data.get("glb_path")
 
             if not glb_path:
                 return Response({"error": "Model not found."}, status=status.HTTP_404_NOT_FOUND)
