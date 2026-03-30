@@ -1,2 +1,3 @@
 venv/
 firebase/firebase-service-account.json
+capture/ai_models/*.pth

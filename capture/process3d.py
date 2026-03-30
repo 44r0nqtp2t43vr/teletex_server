@@ -3,7 +3,7 @@ import cv2
 import trimesh
 from PIL import Image
 from config.firebase_config import get_bucket
-
+from capture.ai_models.inference import predict_binary_from_pil
 
 def storage_path_to_bgr(path):
     bucket = get_bucket()
@@ -156,6 +156,38 @@ def build_binary_from_vtimages(vt_bgr_list, x_start, y_start, side_length):
     final_binary_rgb = create_master_grid(binary_list)
     return final_binary_rgb
 
+def build_binary_from_ai(vt_bgr_list):
+    tiles = []
+
+    for idx, vt_bgr in enumerate(vt_bgr_list, start=1):
+        rgb = cv2.cvtColor(vt_bgr, cv2.COLOR_BGR2RGB)
+
+        roi = rgb[Y_START:Y_START + SIDE_LENGTH, X_START:X_START + SIDE_LENGTH]
+
+        if roi.size == 0:
+            h, w = rgb.shape[:2]
+            raise ValueError(
+                f"ROI crop empty for VT image {idx}. Image size={w}x{h}."
+            )
+
+        pil_img = Image.fromarray(roi)
+
+        pred_mask = predict_binary_from_pil(pil_img)
+
+        pred_mask_resized = cv2.resize(pred_mask, (500, 500))
+
+        pred_rgb = np.stack([pred_mask_resized]*3, axis=-1)
+        tiles.append(pred_rgb)
+
+    if len(tiles) != 16:
+        raise ValueError(f"Expected 16 VT images, got {len(tiles)}")
+
+    rows = []
+    for r in range(4):
+        row = np.hstack(tiles[r * 4:(r + 1) * 4])
+        rows.append(row)
+
+    return np.vstack(rows)
 
 def generate_tile_glb_bytes(color_bgr: np.ndarray, depth_rgb: np.ndarray, target_size=(512, 512)):
     color_bgr = cv2.resize(color_bgr, target_size, interpolation=cv2.INTER_AREA)
@@ -305,12 +337,14 @@ def generate_and_upload_glb(textile_id, progress_callback=None):
         )
 
     # stitched binary/depth image
-    depth_rgb = build_binary_from_vtimages(
-        vt_bgr_list,
-        X_START,
-        Y_START,
-        SIDE_LENGTH
-    )
+    # depth_rgb = build_binary_from_vtimages(
+    #     vt_bgr_list,
+    #     X_START,
+    #     Y_START,
+    #     SIDE_LENGTH
+    # )
+
+    depth_rgb = build_binary_from_ai(vt_bgr_list)
 
     binary_path = upload_rgb_image(
         textile_id,
