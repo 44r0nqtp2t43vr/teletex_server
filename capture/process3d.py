@@ -73,12 +73,46 @@ def get_textile_path(textile_id):
 X_START, Y_START, SIDE_LENGTH = 275, 275, 1371
 
 
-def create_master_grid_bgr(img_list, size=(500, 500)):
+# def create_master_grid_bgr(img_list, size=(500, 500)):
+#     if len(img_list) != 16:
+#         raise ValueError(f"Expected 16 images for stitching, got {len(img_list)}.")
+
+#     prepared = [cv2.resize(img, size) for img in img_list]
+#     rows = [np.hstack(prepared[idx:idx + 4]) for idx in range(0, 16, 4)]
+#     return np.vstack(rows)
+
+def create_master_grid_bgr(img_list, roi_rect=(275, 275, 1371, 1371), size=(500, 500)):
+    """
+    Crops images to ROI, resizes them, and stitches them into a 4x4 BGR grid.
+    
+    :param img_list: List of 16 BGR images.
+    :param roi_rect: Tuple of (x, y, w, h) for the crop.
+    :param tile_size: The size each tile should be resized to before stitching.
+    :return: A single stitched BGR numpy array.
+    """
     if len(img_list) != 16:
         raise ValueError(f"Expected 16 images for stitching, got {len(img_list)}.")
 
-    prepared = [cv2.resize(img, size) for img in img_list]
-    rows = [np.hstack(prepared[idx:idx + 4]) for idx in range(0, 16, 4)]
+    x, y, w, h = roi_rect
+    prepared = []
+
+    for img in img_list:
+        # 1. Perform the ROI Crop (y:y+h, x:x+w)
+        roi = img[y:y+h, x:x+w]
+        
+        # 2. Resize to the target tile size
+        resized = cv2.resize(roi, size)
+        
+        # 3. Ensure 3-channel BGR for stitching (in case of grayscale inputs)
+        if len(resized.shape) == 2:
+            resized = cv2.cvtColor(resized, cv2.COLOR_GRAY2BGR)
+            
+        prepared.append(resized)
+
+    # 4. Stitch horizontal rows (4 images per row)
+    rows = [np.hstack(prepared[i:i + 4]) for i in range(0, 16, 4)]
+    
+    # 5. Stack rows vertically
     return np.vstack(rows)
 
 
@@ -363,11 +397,21 @@ def generate_and_upload_glb(textile_id, progress_callback=None):
     glb_bytes = generate_tile_glb_bytes(color_bgr, depth_rgb)
     glb_path = upload_glb_bytes(textile_id, glb_bytes)
 
+    # create screenshot/preview image from the 3D model
+    preview_bgr = render_glb_preview_bgr(glb_bytes)   # example function
+    model_preview_path = upload_bgr_image(
+        textile_id,
+        preview_bgr,
+        "model_preview",
+        "model_preview"
+    )
+
     if progress_callback:
         progress_callback(
             stage="model_ready",
             progress=4,
-            glb_path=glb_path
+            glb_path=glb_path,
+            model_preview_path=model_preview_path
         )
 
     return {
@@ -375,4 +419,150 @@ def generate_and_upload_glb(textile_id, progress_callback=None):
         "stitched_path": stitched_path,
         "binary_path": binary_path,
         "glb_path": glb_path,
+        "model_preview_path": model_preview_path,
     }
+
+import io
+import numpy as np
+import cv2
+import trimesh
+import pyrender
+
+
+def render_glb_preview_bgr(
+    glb_bytes: bytes,
+    width: int = 768,
+    height: int = 768,
+    bg_color=(255, 255, 255, 0),
+) -> np.ndarray:
+    """
+    Render a preview image from GLB bytes and return it as a BGR numpy array.
+
+    Args:
+        glb_bytes: Raw GLB file bytes.
+        width: Output image width.
+        height: Output image height.
+        bg_color: Background color for pyrender scene, in RGBA.
+
+    Returns:
+        np.ndarray of shape (height, width, 3), dtype uint8, in BGR format.
+
+    Raises:
+        RuntimeError: If the GLB cannot be loaded or rendered.
+    """
+    try:
+        # Load GLB bytes into a trimesh scene
+        glb_stream = io.BytesIO(glb_bytes)
+        loaded = trimesh.load(glb_stream, file_type="glb", force="scene")
+
+        if loaded is None:
+            raise RuntimeError("Failed to load GLB bytes.")
+
+        if isinstance(loaded, trimesh.Trimesh):
+            tri_scene = trimesh.Scene(loaded)
+        else:
+            tri_scene = loaded
+
+        if len(tri_scene.geometry) == 0:
+            raise RuntimeError("GLB scene contains no geometry.")
+
+        # Convert trimesh scene -> pyrender scene
+        scene = pyrender.Scene.from_trimesh_scene(
+            tri_scene,
+            bg_color=bg_color,
+            ambient_light=np.array([0.25, 0.25, 0.25, 1.0], dtype=np.float32),
+        )
+
+        # Compute scene bounds
+        bounds = tri_scene.bounds
+        if bounds is None or bounds.shape != (2, 3):
+            raise RuntimeError("Could not determine scene bounds.")
+
+        min_corner, max_corner = bounds
+        center = (min_corner + max_corner) / 2.0
+        extents = max_corner - min_corner
+        radius = float(np.linalg.norm(extents)) * 0.6
+
+        if radius <= 0:
+            radius = 1.0
+
+        # Camera position: slightly elevated, front-right view
+        camera = pyrender.PerspectiveCamera(yfov=np.pi / 3.0)
+
+        cam_pose = np.eye(4, dtype=np.float32)
+        cam_pose[:3, 3] = center + np.array([radius, -radius, radius * 0.7], dtype=np.float32)
+
+        # Make camera look at center
+        cam_pose = _look_at(cam_pose[:3, 3], center)
+
+        scene.add(camera, pose=cam_pose)
+
+        # Directional lights from a few angles
+        light = pyrender.DirectionalLight(color=np.ones(3), intensity=2.5)
+        scene.add(light, pose=cam_pose)
+
+        light_pose_2 = np.eye(4, dtype=np.float32)
+        light_pose_2[:3, 3] = center + np.array([-radius, radius, radius], dtype=np.float32)
+        light_pose_2 = _look_at(light_pose_2[:3, 3], center)
+        scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=1.8), pose=light_pose_2)
+
+        light_pose_3 = np.eye(4, dtype=np.float32)
+        light_pose_3[:3, 3] = center + np.array([0, 0, radius * 1.5], dtype=np.float32)
+        light_pose_3 = _look_at(light_pose_3[:3, 3], center)
+        scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=1.2), pose=light_pose_3)
+
+        # Render
+        renderer = pyrender.OffscreenRenderer(viewport_width=width, viewport_height=height)
+        try:
+            color_rgba, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
+        finally:
+            renderer.delete()
+
+        # Convert RGBA -> BGR
+        if color_rgba.shape[-1] == 4:
+            color_rgb = cv2.cvtColor(color_rgba, cv2.COLOR_RGBA2RGB)
+        else:
+            color_rgb = color_rgba
+
+        color_bgr = cv2.cvtColor(color_rgb, cv2.COLOR_RGB2BGR)
+        return color_bgr.astype(np.uint8)
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to render GLB preview: {e}") from e
+
+
+def _look_at(eye, target, up=np.array([0.0, 0.0, 1.0], dtype=np.float32)) -> np.ndarray:
+    """
+    Build a camera pose matrix for pyrender that looks from eye -> target.
+    Returns a 4x4 transform matrix.
+    """
+    eye = np.asarray(eye, dtype=np.float32)
+    target = np.asarray(target, dtype=np.float32)
+    up = np.asarray(up, dtype=np.float32)
+
+    forward = target - eye
+    forward_norm = np.linalg.norm(forward)
+    if forward_norm < 1e-8:
+        raise ValueError("Camera eye and target are too close.")
+    forward /= forward_norm
+
+    right = np.cross(forward, up)
+    right_norm = np.linalg.norm(right)
+    if right_norm < 1e-8:
+        # Fallback if forward is parallel to up
+        up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        right = np.cross(forward, up)
+        right_norm = np.linalg.norm(right)
+        if right_norm < 1e-8:
+            raise ValueError("Could not construct camera basis.")
+    right /= right_norm
+
+    true_up = np.cross(right, forward)
+    true_up /= np.linalg.norm(true_up)
+
+    pose = np.eye(4, dtype=np.float32)
+    pose[:3, 0] = right
+    pose[:3, 1] = true_up
+    pose[:3, 2] = -forward
+    pose[:3, 3] = eye
+    return pose

@@ -113,6 +113,7 @@ class GetPreview(APIView):
             stitched_path = data.get("stitched_path")
             binary_path = data.get("binary_path")
             glb_path = data.get("glb_path")
+            model_preview_path = data.get("model_preview_path")
             status_value = data.get("status")
             stage = data.get("stage")
             progress = data.get("progress", 0)
@@ -121,6 +122,7 @@ class GetPreview(APIView):
             stitched_url = None
             binary_url = None
             glb_url = None
+            model_preview_url = None
 
             if textile_path:
                 original_url = bucket.blob(textile_path).generate_signed_url(
@@ -146,6 +148,12 @@ class GetPreview(APIView):
                     method="GET"
                 )
 
+            if model_preview_path:
+                model_preview_url = bucket.blob(model_preview_path).generate_signed_url(
+                    expiration=timedelta(hours=1),
+                    method="GET"
+                )
+
             return Response(
                 {
                     "textileId": textile_id,
@@ -158,6 +166,7 @@ class GetPreview(APIView):
                     "stitchedImageUrl": stitched_url,
                     "binaryImageUrl": binary_url,
                     "glbUrl": glb_url,
+                    "modelPreviewUrl": model_preview_url,
                 },
                 status=status.HTTP_200_OK
             )
