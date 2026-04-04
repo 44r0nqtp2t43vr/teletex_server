@@ -219,14 +219,26 @@ class GetModel(APIView):
 
             data = doc.to_dict()
             glb_path = data.get("glb_path")
+            binary_path = data.get("binary_path")
 
-            if not glb_path:
+            if not glb_path or not binary_path:
                 return Response({"error": "Model not found."}, status=status.HTTP_404_NOT_FOUND)
 
             blob = bucket.blob(glb_path)
             glb_url = blob.generate_signed_url(expiration=timedelta(hours=1),method="GET")
 
-            return Response({"textileId": doc.id, "title": data.get("title"), "glbSignedUrl": glb_url,}, status=status.HTTP_200_OK)
+            binary_blob = bucket.blob(binary_path)
+            binary_url = binary_blob.generate_signed_url(
+                expiration=timedelta(hours=1), 
+                method="GET"
+            )
+
+            return Response({
+                "textileId": doc.id, 
+                "title": data.get("title"), 
+                "glbSignedUrl": glb_url,
+                "binarySignedUrl": binary_url,
+            }, status=status.HTTP_200_OK)
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
