@@ -293,7 +293,15 @@ def generate_tile_glb_bytes(color_bgr: np.ndarray, depth_rgb: np.ndarray, target
 
     rgb_img = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB)
     pil_img = Image.fromarray(rgb_img)
-    material = trimesh.visual.texture.SimpleMaterial(image=pil_img)
+    # material = trimesh.visual.texture.SimpleMaterial(image=pil_img)
+    # visuals = trimesh.visual.TextureVisuals(uv=all_uvs, material=material)
+
+    material = trimesh.visual.texture.PBRMaterial(
+        baseColorTexture=pil_img,
+        baseColorFactor=np.array([1.0, 1.0, 1.0, 1.0]),
+        metallicFactor=0.0,
+        roughnessFactor=1.0
+    )
     visuals = trimesh.visual.TextureVisuals(uv=all_uvs, material=material)
 
     mesh = trimesh.Trimesh(
